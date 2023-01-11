@@ -1,0 +1,34 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Project Sdk="Microsoft.Windows.WinmdGenerator/0.40.14-preview">
+    <PropertyGroup Label="Globals">
+        <OutputWinmd>../.windows/winmd/Microsoft.Direct3D.DirectStorage.winmd</OutputWinmd>
+        <WinmdVersion>255.255.255.255</WinmdVersion>
+        <AdditionalIncludes>$(PkgMicrosoft_Direct3D_DirectStorage)\native\include</AdditionalIncludes>
+        <ExcludeFromCrossarch>Microsoft.Direct3D.DirectStorage</ExcludeFromCrossarch>
+    </PropertyGroup>
+
+    <Target Name="CopyNativeLibs" AfterTargets="Build">
+        <ItemGroup>
+            <DirectStorageNativeFiles Include="$(PkgMicrosoft_Direct3D_DirectStorage)\native\*\x64\*" />
+        </ItemGroup>
+        <Copy
+            SourceFiles="@(DirectStorageNativeFiles)" DestinationFolder="../.windows/x64" />
+    </Target>
+
+    <ItemGroup>
+        <ImportLibs Include="$(PkgMicrosoft_Direct3D_DirectStorage)\native\lib\x64\dstorage.lib" />
+        <ManualCs Include="*.manual.cs" />
+
+        <Partition Include="dstorage.cpp">
+            <TraverseFiles>
+                $(PkgMicrosoft_Direct3D_DirectStorage)\native\include\dstorage.h;
+                $(PkgMicrosoft_Direct3D_DirectStorage)\native\include\dstorageerr.h
+            </TraverseFiles>
+            <Namespace>Microsoft.Direct3D.DirectStorage</Namespace>
+        </Partition>
+
+        <PackageReference Include="Microsoft.Direct3D.DirectStorage" Version="1.1.1" GeneratePathProperty="true">
+            <IncludeAssets>none</IncludeAssets>
+        </PackageReference>
+    </ItemGroup>
+</Project>
