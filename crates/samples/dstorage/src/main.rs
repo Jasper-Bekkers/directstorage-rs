@@ -28,6 +28,157 @@ use windows::{
     },
 };
 
+//
+
+use std::sync::Arc;
+use downcast_rs::{impl_downcast, Downcast, DowncastSync};
+
+trait File: Downcast {}
+impl_downcast!(File);
+
+struct StorageSource {
+    file: Arc<dyn File>,
+    offset_in_bytes: usize,
+    size_in_bytes: usize,
+}
+
+enum StorageDestination {
+    Buffer {
+        resource: ID3D12Resource,
+        offset_in_bytes: usize,
+    },
+    Texture
+}
+
+struct StorageRequest {
+    source: StorageSource,
+    destination: StorageDestination,
+    uncompressed_size_in_bytes: usize,
+}
+
+trait Queue {
+    fn enqueue_request(&self, request: StorageRequest);
+    fn submit();
+}
+
+struct DirectStorageFile {
+    handle: IDStorageFile
+}
+
+impl DirectStorageFile {
+    fn new(factory: &IDStorageFactory, file_name: &std::path::Path) -> Self {
+        use std::os::windows::prelude::*;
+
+        let file_name = ::windows::core::HSTRING::from(file_name.as_os_str());
+        let handle: IDStorageFile = unsafe { factory.OpenFile(&file_name).unwrap() };
+
+        Self {
+            handle
+        }
+    }
+}
+impl File for DirectStorageFile {}
+
+struct DirectStorageQueue {
+    handle: IDStorageQueue,
+}
+
+impl DirectStorageQueue {
+    fn new(factory: &IDStorageFactory, device: ID3D12Device) -> Self {
+        let queue_description = DSTORAGE_QUEUE_DESC {
+            SourceType: DSTORAGE_REQUEST_SOURCE_FILE,
+            Capacity: DSTORAGE_MAX_QUEUE_CAPACITY as u16,
+            Priority: DSTORAGE_PRIORITY_NORMAL,
+            Device: Some(device.clone()),
+            ..Default::default()
+        };
+
+        let handle: IDStorageQueue = unsafe { factory.CreateQueue(&queue_description).unwrap() };
+    
+        Self {
+            handle
+        }
+    }
+}
+
+impl Queue for DirectStorageQueue {
+    fn enqueue_request(&self, request: StorageRequest) {
+        let source_file = request.source.file.downcast_ref::<DirectStorageFile>().unwrap();
+
+        let source_file = ManuallyDrop::new(DSTORAGE_SOURCE_FILE {
+            Offset: request.source.offset_in_bytes.try_into().unwrap(),
+            Size: request.source.size_in_bytes.try_into().unwrap(),
+            Source: Some(source_file.handle.clone()),
+        });
+
+        let destination = match request.destination {
+            StorageDestination::Buffer { resource, offset_in_bytes } => {
+                let destination_buffer = ManuallyDrop::new(DSTORAGE_DESTINATION_BUFFER {
+                    Resource: Some(resource),
+                    Offset: offset_in_bytes.try_into().unwrap(),
+                    Size: request.source.size_in_bytes.try_into().unwrap(),
+                });
+                
+                DSTORAGE_DESTINATION {
+                    Buffer: destination_buffer,
+                }
+            },
+            _ => unimplemented!()
+        };
+
+        let dsrequest = DSTORAGE_REQUEST {
+            Options: DSTORAGE_REQUEST_OPTIONS {
+                // BUG: Metadata
+                Upper: 0,
+                Lower: 2,
+            },
+            Source: DSTORAGE_SOURCE { File: source_file },
+            Destination: destination,
+            UncompressedSize: request.uncompressed_size_in_bytes.try_into().unwrap(),
+            ..Default::default()
+        };
+
+        unsafe { self.handle.EnqueueRequest(&dsrequest) };    
+    }
+}
+
+trait StorageDevice {
+    fn open_file(&self, file_name: impl AsRef<std::path::Path>) -> Arc<dyn File>;
+    fn create_queue(&self, device: ID3D12Device) -> Arc<dyn Queue>;
+}
+
+struct DirectStorageDevice {
+    factory: IDStorageFactory,
+}
+
+impl DirectStorageDevice {
+    fn new() -> Self {
+        let mut factory: *mut c_void = std::ptr::null_mut();
+        unsafe { DStorageGetFactory(&IDStorageFactory::IID, &mut factory).unwrap() };
+        let factory = unsafe { IDStorageFactory::from_raw(factory) };
+    
+        Self {
+            factory
+        }
+    }
+}
+
+impl StorageDevice for DirectStorageDevice {
+    fn open_file(&self, file_name: impl AsRef<std::path::Path>) -> Arc<dyn File> {
+        Arc::new(DirectStorageFile::new(
+            &self.factory,
+            file_name.as_ref(),
+        ))
+    }
+
+    fn create_queue(&self, device: ID3D12Device) -> Arc<dyn Queue> {
+        Arc::new(DirectStorageQueue::new(
+            &self.factory,
+            device
+        ))
+    }
+}
+
 fn main() -> windows::core::Result<()> {
     //
     // Create virtual adapter and DirectStorage factory
@@ -40,6 +191,9 @@ fn main() -> windows::core::Result<()> {
     let mut factory: *mut c_void = std::ptr::null_mut();
     unsafe { DStorageGetFactory(&IDStorageFactory::IID, &mut factory)? };
     let factory = unsafe { IDStorageFactory::from_raw_borrowed(&factory) };
+
+    let dsdevice = DirectStorageDevice::new();
+    dsdevice.create_queue(device.clone());
 
     //
     // Prepare file input
